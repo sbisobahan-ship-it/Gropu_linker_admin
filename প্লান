@@ -1,0 +1,901 @@
+# Group Linker API Documentation
+
+## পরিচিতি
+
+এই ডকুমেন্টে `Group Linker` প্রজেক্টের বর্তমান API endpoint গুলো বাংলায় পরিষ্কারভাবে দেওয়া হলো। এখানে শুধু যেগুলো কোডে বাস্তবে আছে সেগুলোই উল্লেখ করা হয়েছে।
+
+## Base URL
+
+```text
+/api/v1
+```
+
+লোকাল উদাহরণ:
+
+```text
+https://buildbdapp.shop/walinker_config/api/v1
+```
+
+## কমন Response Format
+
+সফল response:
+
+```json
+{
+  "status": "success",
+  "message": "Success",
+  "data": {}
+}
+```
+
+Error response:
+
+```json
+{
+  "status": "error",
+  "message": "Error message"
+}
+```
+
+## Authentication
+
+### 1. Public Endpoint
+
+কোনো authentication লাগে না।
+
+### 2. User Auth Endpoint
+
+বেশিরভাগ user endpoint-এ নিচের header লাগে:
+
+```http
+App-Id: USER_APP_ID
+Device-Hash: DEVICE_HASH
+Timestamp: UNIX_TIMESTAMP
+Signature: HMAC_SHA256(app_id + timestamp, SERVER_SECRET)
+Content-Type: application/json
+```
+
+Signature logic:
+
+```text
+signature = hash_hmac('sha256', app_id + timestamp, SERVER_SECRET)
+```
+
+নোট:
+
+- `Timestamp` 5 মিনিটের বেশি পুরনো বা ভবিষ্যতের হলে request reject হবে।
+- `generate_app_id` public endpoint।
+- `user/ping` এবং `user/update_fcm_token` endpoint-এ legacy auth flow ব্যবহার হয়।
+
+### 3. Admin Auth Endpoint
+
+Admin protected endpoint-এ:
+
+```http
+Authorization: Bearer ADMIN_TOKEN
+Content-Type: application/json
+```
+
+Admin token পাওয়া যায়:
+
+1. `POST /admin/auth/login.php`
+2. `POST /admin/auth/verify_otp.php`
+
+## Public Endpoints
+
+### `POST /auth/generate_app_id.php`
+
+- কাজ: নতুন user/device-এর জন্য `app_id` তৈরি করে
+- Access: Public
+- Body:
+
+```json
+{
+  "device_hash": "unique-device-hash"
+}
+```
+
+- Success data:
+
+```json
+{
+  "app_id": "uuid-v4"
+}
+```
+
+- নোট:
+- একই `device_hash` থাকলে আগের active `app_id` ফেরত আসতে পারে
+- নতুন user তৈরি হলে rewards table-এ initial points insert হয়
+
+### `GET /categories/list.php`
+
+- কাজ: সব active category আনে
+- Access: Public
+- Response fields:
+- `id`
+- `name`
+- `image_link`
+
+### `GET /countries/list.php`
+
+- কাজ: সব active country আনে
+- Access: Public
+- Response fields:
+- `id`
+- `name`
+- `code`
+
+### `GET /system/settings.php`
+
+- কাজ: app/server settings আনে
+- Access: Public
+- Response fields:
+- `server_status`
+- `min_app_version`
+- `help_link`
+- `service_link`
+- `policy_link`
+- `update_message`
+- `reward_points_per_request`
+- `reward_interval_seconds`
+- `post_submit_interval_seconds`
+- `ads_status`
+
+### `GET /system/ads_status.php`
+
+- কাজ: শুধু ads status আনে
+- Access: Public
+- Response example:
+
+```json
+{
+  "status": "success",
+  "message": "Ads status retrieved successfully.",
+  "data": {
+    "ads_status": "on"
+  }
+}
+```
+
+## User Endpoints
+
+নিচের endpoint গুলোতে সাধারণত User Auth লাগে, যদি আলাদা করে কিছু বলা না থাকে।
+
+### `POST /user/ping.php`
+
+- কাজ: logged-in user-এর `last_active` update করে
+- Access: User
+- Body: নেই
+
+### `POST /user/update_fcm_token.php`
+
+- কাজ: user-এর FCM token save/update করে
+- Access: User
+- Body:
+
+```json
+{
+  "fcm_token": "firebase-token"
+}
+```
+
+### `GET /user/notifications.php`
+
+- কাজ: user-এর notifications আনে
+- Access: User
+- Response: সর্বশেষ notifications list
+
+### `GET /posts/list.php`
+
+- কাজ: approved post list আনে
+- Access: User
+- Query params:
+- `page` optional, default `1`
+- `limit` optional, default `20`, max `100`
+- `category_id` optional
+- `country_id` optional
+- `sort` optional: `latest`, `trending`, `most_clicked`
+- Response fields:
+- `page`
+- `limit`
+- `count`
+- `posts`
+
+### `GET /posts/search.php`
+
+- কাজ: `group_name` দিয়ে search করে
+- Access: User
+- Query params:
+- `q` required, minimum 2 characters
+- `page` optional
+- `limit` optional
+- Response fields:
+- `query`
+- `page`
+- `limit`
+- `count`
+- `posts`
+
+### `POST /posts/submit.php`
+
+- কাজ: নতুন post submit করে, status থাকে `pending`
+- Access: User
+- Body:
+
+```json
+{
+  "category_id": 1,
+  "country_id": 1,
+  "group_link": "https://chat.whatsapp.com/xxxx",
+  "group_name": "Demo Group"
+}
+```
+
+- Required:
+- `category_id`
+- `country_id`
+- `group_link`
+
+- Optional:
+- `group_name`
+
+- নোট:
+- invalid URL গ্রহণ করা হয় না
+- inactive category/country গ্রহণ করা হয় না
+- duplicate `group_link` গ্রহণ করা হয় না
+
+### `POST /posts/view.php`
+
+- কাজ: post view log করে
+- Access: User
+- Body:
+
+```json
+{
+  "post_id": 123
+}
+```
+
+### `POST /posts/click.php`
+
+- কাজ: post click log করে
+- Access: User
+- Body:
+
+```json
+{
+  "post_id": 123
+}
+```
+
+- নোট:
+- একই user একই post একাধিকবার click করতে পারে না
+
+### `POST /posts/report.php`
+
+- কাজ: post report করে
+- Access: User
+- Body:
+
+```json
+{
+  "post_id": 123,
+  "reason": "Spam"
+}
+```
+
+- নোট:
+- একই user একই post একাধিকবার report করতে পারে না
+
+### `POST /posts/delete.php`
+
+- কাজ: নিজের post delete করে
+- Access: User
+- Body:
+
+```json
+{
+  "group_id": 123
+}
+```
+
+### `GET /posts/analytics.php`
+
+- কাজ: নিজের post analytics আনে
+- Access: User
+- Response fields per post:
+- `id`
+- `category_id`
+- `country_id`
+- `group_link`
+- `group_name`
+- `group_image`
+- `group_type`
+- `status`
+- `click_count`
+- `view_count`
+- `report_count`
+- `created_at`
+
+### `GET /rewards/balance.php`
+
+- কাজ: reward points balance আনে
+- Access: User
+- Response:
+
+```json
+{
+  "points": 120
+}
+```
+
+### `POST /rewards/add.php`
+
+- কাজ: configured reward point add করে
+- Access: User
+- Body: নেই
+- Response:
+
+```json
+{
+  "points_added": 10
+}
+```
+
+### `POST /rewards/minus.php`
+
+- কাজ: 1 point deduct করে
+- Access: User
+- Body: নেই
+- Response:
+
+```json
+{
+  "points": 99,
+  "points_deducted": 1
+}
+```
+
+### `GET /sms/list.php`
+
+- কাজ: active SMS/message list আনে
+- Access: User
+- Response fields:
+- `id`
+- `text`
+- `created_at`
+
+## Admin Auth
+
+### `POST /admin/auth/login.php`
+
+- কাজ: email/password verify করে OTP send করে
+- Access: Public
+- Body:
+
+```json
+{
+  "email": "admin@gmail.com",
+  "password": "admin-password"
+}
+```
+
+### `POST /admin/auth/verify_otp.php`
+
+- কাজ: OTP verify করে admin token দেয়
+- Access: Public
+- Body:
+
+```json
+{
+  "email": "admin@gmail.com",
+  "otp": "123456"
+}
+```
+
+- Success data:
+
+```json
+{
+  "token": "64-char-token"
+}
+```
+
+## Admin Endpoints
+
+### `POST /admin/device/register.php`
+
+- কাজ: admin FCM token save করে
+- Access: Admin
+- Body:
+
+```json
+{
+  "fcm_token": "firebase-token"
+}
+```
+
+### `GET /admin/dashboard/stats.php`
+
+- কাজ: dashboard summary আনে
+- Access: Admin
+- Response fields:
+- `total_users`
+- `total_groups`
+- `total_posts`
+- `total_clicks`
+
+### `GET /admin/analytics/overview.php`
+
+- কাজ: overall analytics আনে
+- Access: Admin
+- Response fields:
+- `total_users`
+- `total_posts` 
+- `total_clicks`
+- `total_views`
+- `total_reports`
+
+### `GET /admin/analytics/date_range.php`
+
+- কাজ: date range analytics আনে
+- Access: Admin
+- Query params:
+- `start_date` required, format `YYYY-MM-DD`
+- `end_date` required, format `YYYY-MM-DD`
+- Response fields:
+- `clicks`
+- `views`
+- `new_posts`
+
+### `GET /system/settings.php`
+
+- কাজ: current server settings আনে
+- Access: Admin
+
+### `POST /admin/settings/update.php`
+
+- কাজ: server settings update করে
+- Access: Admin
+- Body fields:
+- `server_status`
+- `min_app_version`
+- `help_link`
+- `service_link`
+- `policy_link`
+- `update_message`
+- `reward_points_per_request`
+- `reward_interval_seconds`
+- `post_submit_interval_seconds`
+
+### `POST admin/settings/toggle_ads.php`
+
+- কাজ: ads on/off করে
+- Access: Admin
+- Body:
+
+```json
+{
+  "ads_status": "off"
+}
+```
+
+## Admin Categories
+
+### `POST /admin/categories/add.php`
+
+- Access: Admin
+- Body:
+
+```json
+{
+  "name": "Education",
+  "image_link": "https://example.com/cat.png"
+}
+```
+
+### `POST /admin/categories/edit.php`
+
+- Access: Admin
+- Body:
+
+```json
+{
+  "id": 1,
+  "name": "Education",
+  "image_link": "https://example.com/cat.png",
+  "status": "active"
+}
+```
+
+### `POST /admin/categories/delete.php`
+
+- Access: Admin
+- Body:
+
+```json
+{
+  "id": 1
+}
+```
+
+## Admin Countries
+
+### `POST /admin/countries/add.php`
+
+- Access: Admin
+- Body:
+
+```json
+{
+  "name": "Bangladesh",
+  "code": "BD"
+}
+```
+
+### `POST /admin/countries/edit.php`
+
+- Access: Admin
+- Body:
+
+```json
+{
+  "id": 1,
+  "name": "Bangladesh",
+  "code": "BD",
+  "status": "active"
+}
+```
+
+### `POST /admin/countries/delete.php`
+
+- Access: Admin
+- Body:
+
+```json
+{
+  "id": 1
+}
+```
+
+## Admin Posts
+
+### `GET /admin/posts/list.php`
+
+- কাজ: সব post list আনে
+- Access: Admin
+- Query params:
+- `page` optional
+- `limit` optional
+- `search` optional
+- `country_id` optional
+- `category_id` optional
+- `reported` optional: `1` বা `0`
+- `status` optional: `pending`, `approved`, `rejected`
+
+### `GET /admin/posts/pending.php`
+
+- কাজ: pending post list আনে
+- Access: Admin
+- Query params:
+- `page`
+- `limit`
+- `search`
+- `country_id`
+- `category_id`
+
+### `GET /admin/posts/reported.php`
+
+- কাজ: reported posts আনে
+- Access: Admin
+- Response fields:
+- `id`
+- `group_name`
+- `group_link`
+- `report_count`
+- `status`
+
+### `POST /admin/posts/add.php`
+
+- কাজ: admin থেকে সরাসরি approved post create করে
+- Access: Admin
+- Body:
+
+```json
+{
+  "category_id": 1,
+  "country_id": 1,
+  "group_link": "https://chat.whatsapp.com/xxxx",
+  "group_name": "Demo Group",
+  "group_image": "https://example.com/group.png",
+  "group_type": "group"
+}
+```
+
+### `POST /admin/posts/approve.php`
+
+- কাজ: pending post approve করে
+- Access: Admin
+- Body:
+
+```json
+{
+  "post_id": 12,
+  "group_name": "Approved Name",
+  "group_image": "https://example.com/img.png",
+  "group_type": "group",
+  "category_id": 1,
+  "country_id": 1,
+  "status": "approved"
+}
+```
+
+### `POST /admin/posts/reject.php`
+
+- কাজ: post reject করে
+- Access: Admin
+- Body:
+
+```json
+{
+  "post_id": 12,
+  "reason": "Violates community guidelines."
+}
+```
+
+### `POST /admin/posts/delete.php`
+
+- কাজ: post delete করে
+- Access: Admin
+- Body:
+
+```json
+{
+  "id": 12
+}
+```
+
+### `POST /admin/posts/set_trending.php`
+
+- কাজ: post-কে trending এ সেট করে
+- Access: Admin
+- Body:
+
+```json
+{
+  "id": 12,
+  "position": 1,
+  "duration_hours": 24
+}
+```
+
+- Response data:
+
+```json
+{
+  "trending_until": "2026-04-26 12:00:00"
+}
+```
+
+### `GET /admin/posts/boss.php`
+
+- কাজ: শুধু active groups pagination এবং search সহ আনে
+- Access: Admin
+- Query params:
+- `page` optional, default `1`
+- `limit` optional, default `20`, max `100`
+- `search` optional
+- Response fields:
+- `page`
+- `limit`
+- `count`
+- `total_pages`
+- `search`
+- `total_active_groups`
+- `filtered_total_active_groups`
+- `posts`
+
+- Example request:
+
+```bash
+curl -X GET "http://localhost/walinker_config/api/v1/admin/posts/boss?page=1&limit=20&search=demo" ^
+  -H "Authorization: Bearer ADMIN_TOKEN"
+```
+
+- Example response:
+
+```json
+{
+  "status": "success",
+  "message": "Active groups fetched successfully.",
+  "data": {
+    "page": 1,
+    "limit": 20,
+    "count": 1,
+    "total_pages": 1,
+    "search": "demo",
+    "total_active_groups": 57,
+    "filtered_total_active_groups": 1,
+    "posts": []
+  }
+}
+```
+
+## Admin Users
+
+### `GET /admin/users/list.php`
+
+- কাজ: paginated user list আনে, filter support করে, analytics data দেয়
+- Access: Admin
+- Query params:
+- `page` optional, default `1`
+- `limit` optional, default `20`, max `100`
+- `id` optional: exact user ID
+- `created_days` optional: শেষ কত দিনের মধ্যে account create হয়েছে
+- `active_days` optional: শেষ কত দিনের মধ্যে last active হয়েছে
+- `click_days` optional: click statistics filter
+- `report_days` optional: report statistics filter
+- `trending_days` optional: trending post statistics filter
+- `trending_page` optional, default `1`
+- `trending_limit` optional, default `10`
+
+- Response fields:
+- `page`
+- `limit`
+- `count`
+- `total_users`
+- `filtered_total_users`
+- `total_pages`
+- `filters`
+- `analytics.total_clicks`
+- `analytics.total_reports`
+- `analytics.total_trending_posts`
+- `analytics.trending_page`
+- `analytics.trending_limit`
+- `analytics.trending_total_pages`
+- `analytics.trending_posts`
+- `users`
+
+- Example request:
+
+```bash
+curl -X GET "http://builbdapp.shop/walinker_config/api/v1/admin/users/list?page=1&limit=10&created_days=7&active_days=7&click_days=7&report_days=7&trending_days=7" ^
+  -H "Authorization: Bearer ADMIN_TOKEN"
+```
+
+- Example response:
+
+```json
+{
+  "status": "success",
+  "message": "Users fetched successfully.",
+  "data": {
+    "page": 1,
+    "limit": 10,
+    "count": 2,
+    "total_users": 100,
+    "filtered_total_users": 14,
+    "total_pages": 2,
+    "filters": {
+      "id": null,
+      "created_days": 7,
+      "active_days": 7,
+      "click_days": 7,
+      "report_days": 7,
+      "trending_days": 7
+    },
+    "analytics": {
+      "total_clicks": 32,
+      "total_reports": 4,
+      "total_trending_posts": 3,
+      "trending_page": 1,
+      "trending_limit": 10,
+      "trending_total_pages": 1,
+      "trending_posts": []
+    },
+    "users": []
+  }
+}
+```
+
+### `GET /admin/users/posts.php`
+
+- কাজ: নির্দিষ্ট user-এর posts আনে
+- Access: Admin
+- Query params:
+- `app_id` required
+
+### `POST /admin/users/delete`
+
+- কাজ: user delete করে
+- Access: Admin
+- Body:
+
+```json
+{
+  "app_id": "user-app-id"
+}
+```
+
+## Admin SMS
+
+### `GET /admin/sms/list.php`
+
+- কাজ: সব SMS record আনে
+- Access: Admin
+
+### `POST /admin/sms/send`
+
+- কাজ: নির্দিষ্ট user-কে SMS record save করে, প্রয়োজনে push send করে
+- Access: Admin
+- Body:
+
+```json
+{
+  "app_id": "user-app-id",
+  "text": "Hello user"
+}
+```
+
+### `POST /admin/sms/edit.php`
+
+- কাজ: SMS text/status update করে
+- Access: Admin
+- Body:
+
+```json
+{
+  "id": 1,
+  "text": "Updated message",
+  "status": "active"
+}
+```
+
+## Admin Notifications
+
+### `POST /admin/notifications/send.php`
+
+- কাজ: all user বা specific target-এ notification send করে
+- Access: Admin
+- Body example:
+
+```json
+{
+  "title": "Notice",
+  "body": "System maintenance",
+  "target": "all"
+}
+```
+
+Specific target example:
+
+```json
+{
+  "title": "Notice",
+  "body": "Custom message",
+  "target": "specific",
+  "target_value": "USER_APP_ID"
+}
+```
+
+## Admin Rewards
+
+### `POST /admin/rewards/update_bulk.php`
+
+- কাজ: সব user-এর reward points bulk update করে
+- Access: Admin
+- Body:
+
+```json
+{
+  "amount": 10
+}
+```
+
+## গুরুত্বপূর্ণ নোট
+
+- `system/ads_status` public endpoint।
+- `admin/posts/boss` endpoint শুধু approved/active groups দেখায়।
+- `admin/users/list` endpoint-এ pagination, filter, analytics এবং trending post data আছে।
+- `admin/posts/add` endpoint database relation-এর কারণে production-এ extra validation দরকার হতে পারে।
+- response structure সব endpoint-এ `status`, `message`, `data` pattern অনুসরণ করে, তবে কিছু পুরনো endpoint `data`-এর মধ্যে সরাসরি list ফেরত দেয়।
