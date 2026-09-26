@@ -1,7 +1,7 @@
 const API_BASE_URL =
   process.env.ADMIN_API_BASE_URL ??
   process.env.NEXT_PUBLIC_API_BASE_URL ??
-  "https://buildbdapp.shop/walinker_config/api/v1";
+  "https://buildbdapp.top/walinker_config/api/v1";
 
 function buildTargetUrl(request) {
   const { searchParams } = new URL(request.url);

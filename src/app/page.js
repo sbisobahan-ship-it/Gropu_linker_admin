@@ -4,7 +4,7 @@ import Image from "next/image";
 import { startTransition, useCallback, useEffect, useMemo, useState } from "react";
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://buildbdapp.shop/walinker_config/api/v1";
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://buildbdapp.top/walinker_config/api/v1";
 const CLIENT_API_PROXY_BASE = "/api/admin-proxy";
 const SCRAPER_API = "/api/scrape-whatsapp";
 const TOKEN_KEY = "group_linker_admin_token";
@@ -94,6 +94,12 @@ const initialForms = {
     default_category_id: "",
     default_country_id: "",
     group_links: "",
+    active_group_search: "",
+    selector_settings: {
+      group: { imageClass: "_9vx6", nameClass: "_as2p", typeClass: "" },
+      channel: { imageClass: "_9vx6", nameClass: "_as2p", typeClass: "" },
+      community: { imageClass: "_9vx6", nameClass: "_as2p", typeClass: "" },
+    },
   },
 };
 
@@ -102,6 +108,8 @@ const initialBulkValidation = {
   page: 1,
   checked: 0,
   inactiveFound: 0,
+  approved: 0,
+  deleted: 0,
 };
 
 const initialPagination = {
@@ -340,6 +348,7 @@ async function scrapeWhatsappGroup(groupLink, options = {}) {
     body: JSON.stringify({
       groupLink,
       strictClassesOnly: Boolean(options.strictClassesOnly),
+      selectorSettings: options.selectorSettings,
     }),
   });
 
@@ -783,8 +792,11 @@ export default function Home() {
   const [bulkAutomationForm, setBulkAutomationForm] = useState(initialForms.bulkAutomation);
   const [bulkPostingLogs, setBulkPostingLogs] = useState([]);
   const [inactiveGroups, setInactiveGroups] = useState([]);
+  const [autoDeleteInactive, setAutoDeleteInactive] = useState(true);
   const [bulkValidation, setBulkValidation] = useState(initialBulkValidation);
   const [validationLogs, setValidationLogs] = useState([]);
+
+  const activeGroupSearch = bulkAutomationForm.active_group_search;
 
   const dashboardStats = useMemo(() => {
     const stats = normalizeObject(collections.stats);
@@ -926,6 +938,7 @@ export default function Home() {
       setActiveGroupsPagination((current) => ({
         ...current,
         page: 1,
+        limit: Number(normalizedActiveGroupsObj.limit) || current.limit,
         totalPages: Math.max(Number(normalizedActiveGroupsObj.total_pages) || 1, 1),
       }));
     } catch (loadError) {
@@ -947,6 +960,7 @@ export default function Home() {
         buildEndpointWithQuery(ENDPOINTS.postsBoss, {
           page: nextPage,
           limit: activeGroupsPagination.limit,
+          search: activeGroupSearch,
         })
       );
       const normalizedObj = normalizeObject(response);
@@ -967,7 +981,37 @@ export default function Home() {
     } finally {
       setActiveGroupsPagination((curr) => ({ ...curr, loadingMore: false }));
     }
-  }, [activeGroupsPagination, guardedRequest]);
+  }, [activeGroupSearch, activeGroupsPagination, guardedRequest]);
+
+  const loadActiveGroupsPage = useCallback(
+    async ({ page = 1, search = activeGroupSearch, append = false } = {}) => {
+      const response = await guardedRequest(
+        buildEndpointWithQuery(ENDPOINTS.postsBoss, {
+          page,
+          limit: activeGroupsPagination.limit,
+          search,
+        })
+      );
+      const normalized = normalizeObject(response);
+      const rows = normalizeList(normalized);
+
+      setCollections((current) => ({
+        ...current,
+        activeGroups: append ? [...current.activeGroups, ...rows] : rows,
+      }));
+
+      setActiveGroupsPagination((current) => ({
+        ...current,
+        page: Number(normalized.page) || page,
+        limit: Number(normalized.limit) || current.limit,
+        totalPages: Math.max(Number(normalized.total_pages) || 1, 1),
+        loadingMore: false,
+      }));
+
+      return response;
+    },
+    [activeGroupSearch, activeGroupsPagination.limit, guardedRequest]
+  );
 
   useEffect(() => {
     const restoreAuth = () => {
@@ -1023,6 +1067,19 @@ export default function Home() {
     setUsersPagination(initialPagination);
     setMessage(nextMessage);
     setDebugInfo(null);
+  }
+
+  function updateSelectorSetting(type, field, value) {
+    setBulkAutomationForm((current) => ({
+      ...current,
+      selector_settings: {
+        ...current.selector_settings,
+        [type]: {
+          ...current.selector_settings[type],
+          [field]: value,
+        },
+      },
+    }));
   }
 
   function handleLoginInputChange(event) {
@@ -1282,6 +1339,27 @@ export default function Home() {
     setBulkAutomationForm((current) => ({ ...current, [name]: value }));
   }
 
+  async function handleActiveGroupSearchSubmit(event) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage("");
+    setDebugInfo(null);
+
+    try {
+      await loadActiveGroupsPage({ page: 1, search: activeGroupSearch, append: false });
+      setMessage(
+        activeGroupSearch?.trim()
+          ? `Active group search completed for "${activeGroupSearch.trim()}".`
+          : "Active groups reloaded."
+      );
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+      setDebugInfo(error?.debugInfo ?? null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function openTrendingModal(group) {
     setTrendingForm({
       id: String(group.id ?? group.post_id ?? ""),
@@ -1379,7 +1457,10 @@ export default function Home() {
         }
 
         try {
-          const scraped = await scrapeWhatsappGroup(entry.group_link, { strictClassesOnly: true });
+          const scraped = await scrapeWhatsappGroup(entry.group_link, {
+            strictClassesOnly: true,
+            selectorSettings: bulkAutomationForm.selector_settings,
+          });
           const payload = {
             category_id: Number(categoryId) || categoryId,
             country_id: Number(countryId) || countryId,
@@ -1421,7 +1502,12 @@ export default function Home() {
       const successCount = nextLogs.filter((item) => item.status === "success").length;
       const failCount = nextLogs.length - successCount;
       setMessage(`Bulk posting finished. Success: ${successCount}, Failed: ${failCount}.`);
-      setBulkAutomationForm(initialForms.bulkAutomation);
+      setBulkAutomationForm((current) => ({
+        ...current,
+        default_category_id: "",
+        default_country_id: "",
+        group_links: "",
+      }));
       await loadCoreData();
     } finally {
       setBusy(false);
@@ -1433,43 +1519,103 @@ export default function Home() {
     setMessage("");
     setDebugInfo(null);
     setInactiveGroups([]);
-    setValidationLogs(["Initializing validation process..."]);
-    setBulkValidation({ running: true, page: 1, checked: 0, inactiveFound: 0 });
+    setValidationLogs([
+      `Initializing validation process... (Auto-Delete: ${autoDeleteInactive ? "ENABLED" : "DISABLED"})`,
+    ]);
+    setBulkValidation({ running: true, page: 1, checked: 0, inactiveFound: 0, approved: 0, deleted: 0 });
 
     const foundInactive = [];
     let currentPage = 1;
     let checked = 0;
+    let approved = 0;
+    let deleted = 0;
+    const selectorSettings = bulkAutomationForm.selector_settings;
 
     try {
       while (true) {
-        setValidationLogs(prev => [...prev, `[System] Fetching page ${currentPage}...`]);
-        const pageData = await guardedRequest(`${ENDPOINTS.postsBoss}?page=${currentPage}`);
-        const rows = normalizeList(pageData);
+        setValidationLogs((prev) => [...prev, `[System] Fetching page ${currentPage}...`]);
+        const pageData = await guardedRequest(
+          buildEndpointWithQuery(ENDPOINTS.postsBoss, {
+            page: currentPage,
+            limit: 20,
+          })
+        );
+        const normalizedPage = normalizeObject(pageData);
+        const rows = normalizeList(normalizedPage);
 
         if (!rows.length) {
-          setValidationLogs(prev => [...prev, `[System] No more groups found at page ${currentPage}.`]);
+          setValidationLogs((prev) => [...prev, `[System] No more groups found at page ${currentPage}.`]);
           break;
         }
 
         for (const row of rows) {
           checked += 1;
           const groupName = row.group_name || row.title || row.group_link;
-          setValidationLogs(prev => [...prev, `[Checking] ${groupName} (ID: ${row.id ?? row.post_id})...`]);
+          const postId = Number(row.id ?? row.post_id) || row.id || row.post_id;
+          setValidationLogs((prev) => [...prev, `[Checking] ${groupName} (ID: ${postId})...`]);
 
           try {
-            const scraped = await scrapeWhatsappGroup(row.group_link, { strictClassesOnly: true });
+            const scraped = await scrapeWhatsappGroup(row.group_link, {
+              strictClassesOnly: true,
+              selectorSettings,
+            });
             if (!scraped?.group_name?.trim()) {
               throw new Error("Empty group name returned.");
             }
-            setValidationLogs(prev => [...prev, `[Valid] ${groupName} is active.`]);
+            const payload = {
+              post_id: postId,
+              group_name: scraped.group_name.trim(),
+              group_image: scraped.group_image.trim(),
+              group_type: scraped.group_type.trim(),
+              category_id: Number(row.category_id) || row.category_id,
+              country_id: Number(row.country_id) || row.country_id,
+              status: "approved",
+            };
+            await guardedRequest("/admin/posts/approve_silent.php", { method: "POST", body: payload });
+            approved += 1;
+            setValidationLogs((prev) => [
+              ...prev,
+              `[Success] ${groupName} scraped and silently approved as ${payload.group_type}.`,
+            ]);
           } catch (err) {
+            let wasDeleted = false;
+            let deleteErrMsg = "";
+
+            if (autoDeleteInactive && postId) {
+              try {
+                await guardedRequest(ENDPOINTS.postsDelete, { method: "POST", body: { id: postId } });
+                wasDeleted = true;
+                deleted += 1;
+                setValidationLogs((prev) => [
+                  ...prev,
+                  `[Auto Removed] ${groupName} (ID: ${postId}) deleted immediately from database.`,
+                ]);
+              } catch (delError) {
+                deleteErrMsg = getErrorMessage(delError);
+                setValidationLogs((prev) => [
+                  ...prev,
+                  `[Delete Failed] Failed to auto-delete group ID ${postId}: ${deleteErrMsg}`,
+                ]);
+              }
+            }
+
             foundInactive.push({
-              id: row.id ?? row.post_id,
+              id: postId,
+              post_id: postId,
+              group_name: row.group_name || "",
               group_link: row.group_link,
-              status: "inactive",
+              category_id: row.category_id,
+              country_id: row.country_id,
+              status: wasDeleted ? "deleted" : "inactive",
+              reason:
+                getErrorMessage(err) +
+                (wasDeleted ? " (Auto-removed)" : deleteErrMsg ? ` (Delete error: ${deleteErrMsg})` : ""),
             });
             setInactiveGroups([...foundInactive]);
-            setValidationLogs(prev => [...prev, `[Inactive Found] ${groupName} appears to be broken or empty.`]);
+            setValidationLogs((prev) => [
+              ...prev,
+              `[Inactive Found] ${groupName} is invalid. ${getErrorMessage(err)}`,
+            ]);
           }
 
           setBulkValidation({
@@ -1477,24 +1623,31 @@ export default function Home() {
             page: currentPage,
             checked,
             inactiveFound: foundInactive.length,
+            approved,
+            deleted,
           });
-          
+
           // Small delay to prevent rate limiting and let logs be readable
-          await new Promise(r => setTimeout(r, 100));
+          await new Promise((r) => setTimeout(r, 100));
         }
 
         currentPage += 1;
       }
 
       const finalMsg = foundInactive.length
-        ? `Validation finished. Checked ${checked} groups, found ${foundInactive.length} inactive.`
-        : `Validation finished. Checked ${checked} groups, all active.`;
-        
-      setValidationLogs(prev => [...prev, `[Finished] ${finalMsg}`]);
+        ? `Validation finished. Checked ${checked} groups, approved ${approved}, found ${foundInactive.length} inactive${
+            autoDeleteInactive ? ` (${deleted} auto-deleted)` : ""
+          }.`
+        : `Validation finished. Checked ${checked} groups, approved ${approved}, all active.`;
+
+      setValidationLogs((prev) => [...prev, `[Finished] ${finalMsg}`]);
       setMessage(finalMsg);
+      if (deleted > 0) {
+        await loadCoreData();
+      }
     } catch (error) {
       const errMsg = getErrorMessage(error);
-      setValidationLogs(prev => [...prev, `[Fatal Error] ${errMsg}`]);
+      setValidationLogs((prev) => [...prev, `[Fatal Error] ${errMsg}`]);
       setMessage(errMsg);
       setDebugInfo(error?.debugInfo ?? null);
     } finally {
@@ -1992,6 +2145,20 @@ export default function Home() {
               rows={collections.activeGroups}
               columns={activeGroupColumns}
               emptyText="No active groups returned by boss endpoint."
+              actions={
+                <form className="flex flex-wrap items-center gap-2" onSubmit={handleActiveGroupSearchSubmit}>
+                  <input
+                    className="input min-w-52"
+                    name="active_group_search"
+                    onChange={handleBulkAutomationInputChange}
+                    placeholder="Search active groups from server"
+                    value={bulkAutomationForm.active_group_search}
+                  />
+                  <button className="secondary-button" disabled={busy} type="submit">
+                    Search
+                  </button>
+                </form>
+              }
               onScrollBottom={loadMoreActiveGroups}
               loadingMore={activeGroupsPagination.loadingMore}
             />
@@ -2060,6 +2227,74 @@ export default function Home() {
                 if you want per-post custom category and country.
               </p>
 
+              <div className="grid gap-4">
+                <div>
+                  <p className="text-sm font-medium text-[var(--ink)]">Scraping Selector Settings</p>
+                  <p className="text-sm text-[var(--muted)]">
+                    WhatsApp class names change over time, so you can manually update image, name, and
+                    type selectors for `group`, `channel`, and `community`.
+                  </p>
+                </div>
+
+                {["group", "channel", "community"].map((type) => (
+                  <div key={type} className="grid gap-4 rounded-3xl border border-[var(--line)] bg-slate-50/70 p-4 md:grid-cols-3">
+                    <label className="field">
+                      <span>{type} Image Class</span>
+                      <input
+                        className="input"
+                        onChange={(event) => updateSelectorSetting(type, "imageClass", event.target.value)}
+                        placeholder='_advp _aeam'
+                        value={bulkAutomationForm.selector_settings[type].imageClass}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>{type} Name Class</span>
+                      <input
+                        className="input"
+                        onChange={(event) => updateSelectorSetting(type, "nameClass", event.target.value)}
+                        placeholder='_advp _aeam'
+                        value={bulkAutomationForm.selector_settings[type].nameClass}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>{type} Type Class</span>
+                      <input
+                        className="input"
+                        onChange={(event) => updateSelectorSetting(type, "typeClass", event.target.value)}
+                        placeholder='_advp _aeam'
+                        value={bulkAutomationForm.selector_settings[type].typeClass}
+                      />
+                    </label>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex flex-col gap-4 rounded-3xl border border-[var(--line)] bg-white p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-[var(--ink)]">
+                      অটো ডিলিট ইনঅ্যাক্টিভ গ্রুপ (Auto-Remove Inactive Groups)
+                    </span>
+                    <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-800">
+                      Default: ON
+                    </span>
+                  </div>
+                  <p className="text-xs text-[var(--muted)]">
+                    চালু থাকলে ভ্যালিডেশন চেকের সময় কোনো গ্রুপ ইনঅ্যাক্টিভ/ইনভ্যালিড পাওয়া মাত্রই ডাটাবেজ থেকে স্বয়ংক্রিয়ভাবে মুছে ফেলবে।
+                  </p>
+                </div>
+                <label className="relative inline-flex cursor-pointer items-center">
+                  <input
+                    checked={autoDeleteInactive}
+                    className="peer sr-only"
+                    disabled={bulkValidation.running}
+                    onChange={(e) => setAutoDeleteInactive(e.target.checked)}
+                    type="checkbox"
+                  />
+                  <div className="peer h-7 w-14 rounded-full bg-slate-200 transition-colors after:absolute after:left-[4px] after:top-[3px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-emerald-600 peer-checked:after:translate-x-7 peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-emerald-300/30"></div>
+                </label>
+              </div>
+
               <div className="flex flex-wrap gap-3">
                 <button className="primary-button" disabled={busy} type="submit">
                   {busy ? "Posting..." : "Start Posting"}
@@ -2093,7 +2328,7 @@ export default function Home() {
                 {bulkValidation.running || validationLogs.length > 0 ? (
                   <TerminalConsole logs={validationLogs} title="Validation Process Log" />
                 ) : (
-                  <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-1">
+                  <div className="grid gap-3 md:grid-cols-4 xl:grid-cols-2">
                     <div className="rounded-3xl border border-[var(--line)] bg-white p-4">
                       <p className="text-sm text-[var(--muted)]">Running Page</p>
                       <p className="mt-2 text-2xl font-semibold text-[var(--ink)]">{bulkValidation.page}</p>
@@ -2106,12 +2341,17 @@ export default function Home() {
                       <p className="text-sm text-[var(--muted)]">Inactive Found</p>
                       <p className="mt-2 text-2xl font-semibold text-[var(--ink)]">{bulkValidation.inactiveFound}</p>
                     </div>
+                    <div className="rounded-3xl border border-[var(--line)] bg-white p-4">
+                      <p className="text-sm text-[var(--muted)]">Auto Removed</p>
+                      <p className="mt-2 text-2xl font-semibold text-rose-600">{bulkValidation.deleted}</p>
+                    </div>
                   </div>
                 )}
 
                 <p className="text-sm text-[var(--muted)]">
-                  Validator reads `/admin/posts/boss.php?page=1,2,3...` in batches of 20 and scrapes each
-                  `group_link`. Groups that fail scraping are listed as inactive below.
+                  This bot reads `/admin/posts/boss.php?page=1,2,3...`, scrapes each `group_link`, posts
+                  fresh `group_name`, `group_image`, and `group_type` to `/admin/posts/approve_silent.php`,
+                  and {autoDeleteInactive ? "automatically deletes invalid groups." : "lists invalid groups below for cleanup."}
                 </p>
               </section>
             </div>
@@ -2122,6 +2362,7 @@ export default function Home() {
               emptyText="Inactive groups will appear here after validation."
               columns={[
                 { key: "id", label: "Group ID" },
+                { key: "group_name", label: "Group Name" },
                 {
                   key: "group_link",
                   label: "Group Link",
@@ -2134,21 +2375,33 @@ export default function Home() {
                 {
                   key: "status",
                   label: "Status",
-                  render: (row) => <span className="status-pill status-reject">{row.status}</span>,
+                  render: (row) => (
+                    <span
+                      className={`status-pill ${
+                        row.status === "deleted" ? "status-deleted" : "status-reject"
+                      }`}
+                    >
+                      {row.status}
+                    </span>
+                  ),
                 },
+                { key: "reason", label: "Reason" },
                 {
                   key: "actions",
                   label: "Actions",
-                  render: (row) => (
-                    <button
-                      className="danger-button"
-                      disabled={busy}
-                      onClick={() => handleInactiveGroupDelete(row)}
-                      type="button"
-                    >
-                      Delete
-                    </button>
-                  ),
+                  render: (row) =>
+                    row.status === "deleted" ? (
+                      <span className="text-xs font-semibold text-emerald-600">Auto Removed</span>
+                    ) : (
+                      <button
+                        className="danger-button"
+                        disabled={busy}
+                        onClick={() => handleInactiveGroupDelete(row)}
+                        type="button"
+                      >
+                        Delete
+                      </button>
+                    ),
                 },
               ]}
             />

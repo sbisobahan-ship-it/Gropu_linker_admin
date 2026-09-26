@@ -9,6 +9,12 @@ const WHATSAPP_HOSTS = new Set([
   "www.whatsapp.com",
 ]);
 
+const DEFAULT_SELECTOR_SETTINGS = {
+  group: { imageClass: "_9vx6", nameClass: "_as2p", typeClass: "" },
+  channel: { imageClass: "_9vx6", nameClass: "_as2p", typeClass: "" },
+  community: { imageClass: "_9vx6", nameClass: "_as2p", typeClass: "" },
+};
+
 function decodeHtml(value) {
   return value
     .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
@@ -28,15 +34,15 @@ function decodeHtml(value) {
 
 function extractMetaContent(html, key) {
   const patterns = [
-    new RegExp(`<meta[^>]+property=["']${key}["'][^>]+content=["']([^"']+)["'][^>]*>`, "i"),
-    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']${key}["'][^>]*>`, "i"),
-    new RegExp(`<meta[^>]+name=["']${key}["'][^>]+content=["']([^"']+)["'][^>]*>`, "i"),
-    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+name=["']${key}["'][^>]*>`, "i"),
+    new RegExp(`<meta[^>]+property=["']${key}["'][^>]+content=(["'])([\\s\\S]*?)\\1[^>]*>`, "i"),
+    new RegExp(`<meta[^>]+content=(["'])([\\s\\S]*?)\\1[^>]+property=["']${key}["'][^>]*>`, "i"),
+    new RegExp(`<meta[^>]+name=["']${key}["'][^>]+content=(["'])([\\s\\S]*?)\\1[^>]*>`, "i"),
+    new RegExp(`<meta[^>]+content=(["'])([\\s\\S]*?)\\1[^>]+name=["']${key}["'][^>]*>`, "i"),
   ];
 
   for (const pattern of patterns) {
     const match = html.match(pattern);
-    if (match?.[1]) return decodeHtml(match[1].trim());
+    if (match?.[2]) return decodeHtml(match[2].trim());
   }
 
   return "";
@@ -47,18 +53,47 @@ function extractTitle(html) {
   return match?.[1] ? decodeHtml(match[1].trim()) : "";
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildClassPattern(className) {
+  const classes = String(className || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((item) => `(?=.*(?:^|\\s)${escapeRegExp(item)}(?:\\s|$))`)
+    .join("");
+
+  return classes ? new RegExp(`class=["'][^"']*${classes}[^"']*["']`, "i") : null;
+}
+
 function extractByClass(html, className) {
-  // Matches <ANY class="...className...">CONTENT</ANY>
-  const pattern = new RegExp(`class=["'][^"']*${className}[^"']*["'][^>]*>([^<]+)<\/`, "i");
+  const classPattern = buildClassPattern(className);
+  if (!classPattern) return "";
+
+  const pattern = new RegExp(`(<[^>]+${classPattern.source}[^>]*>)([\\s\\S]*?)<\\/[^>]+>`, "i");
   const match = html.match(pattern);
-  return match?.[1] ? decodeHtml(match[1].trim()) : "";
+  const content = match?.[2]?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return content ? decodeHtml(content) : "";
 }
 
 function extractImageByClass(html, className) {
-  // Matches <img ... class="...className..." ... src="SRC"
-  const pattern = new RegExp(`<img[^>]+class=["'][^"']*${className}[^"']*["'][^>]+src=["']([^"']+)["']`, "i");
-  const match = html.match(pattern);
-  return match?.[1] ? match[1].trim() : "";
+  const classPattern = buildClassPattern(className);
+  if (!classPattern) return "";
+
+  const imgPattern = new RegExp(`<img[^>]+${classPattern.source}[^>]+src=(["'])([\\s\\S]*?)\\1`, "i");
+  const imgMatch = html.match(imgPattern);
+  if (imgMatch?.[2]) return decodeHtml(imgMatch[2].trim());
+
+  const genericPattern = new RegExp(`(<[^>]+${classPattern.source}[^>]*>)([\\s\\S]*?)<\\/[^>]+>`, "i");
+  const genericMatch = html.match(genericPattern);
+  const tag = genericMatch?.[1] || "";
+  const tagSrc = tag.match(/src=(["'])([\s\S]*?)\1/i)?.[2];
+  if (tagSrc) return decodeHtml(tagSrc.trim());
+
+  const svgMatch = genericMatch?.[2]?.match(/<svg[\s\S]*?<\/svg>/i)?.[0];
+  return svgMatch ? svgMatch.trim() : "";
 }
 
 function normalizeGroupName(value) {
@@ -66,6 +101,17 @@ function normalizeGroupName(value) {
     .replace(/\s*\|\s*WhatsApp.*$/i, "")
     .replace(/\s*-\s*WhatsApp.*$/i, "")
     .trim();
+}
+
+function isPlaceholderInviteName(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return (
+    !normalized ||
+    normalized === "whatsapp" ||
+    normalized === "whatsapp group invite" ||
+    normalized === "group chat invite" ||
+    normalized === "chat invite"
+  );
 }
 
 function inferGroupType({ title, description, url }) {
@@ -76,6 +122,44 @@ function inferGroupType({ title, description, url }) {
   if (source.includes("community")) return "Community";
   if (source.includes("business")) return "Business";
   return "WhatsApp Group";
+}
+
+function normalizeTypeKey(value) {
+  const source = String(value || "").toLowerCase();
+  if (source.includes("channel")) return "channel";
+  if (source.includes("community")) return "community";
+  return "group";
+}
+
+function normalizeGroupTypeLabel(value) {
+  const typeKey = normalizeTypeKey(value);
+  if (typeKey === "channel") return "channel";
+  if (typeKey === "community") return "community";
+  return "group";
+}
+
+function mergeSelectorSettings(rawSettings) {
+  const merged = { ...DEFAULT_SELECTOR_SETTINGS };
+
+  for (const key of Object.keys(DEFAULT_SELECTOR_SETTINGS)) {
+    merged[key] = {
+      ...DEFAULT_SELECTOR_SETTINGS[key],
+      ...(rawSettings?.[key] && typeof rawSettings[key] === "object" ? rawSettings[key] : {}),
+    };
+  }
+
+  return merged;
+}
+
+function isInvalidImageValue(value) {
+  const normalized = decodeHtml(String(value || "").trim()).toLowerCase();
+  if (!normalized) return true;
+  return (
+    normalized.startsWith("<svg") ||
+    normalized.includes("</svg>") ||
+    normalized.includes("xmlns=\"http://www.w3.org/2000/svg\"") ||
+    normalized.startsWith("data:image/svg")
+  );
 }
 
 function getValidWhatsappUrl(rawValue) {
@@ -109,6 +193,7 @@ export async function POST(request) {
   try {
     const body = await request.json();
     const groupLink = getValidWhatsappUrl(body?.groupLink);
+    const selectorSettings = mergeSelectorSettings(body?.selectorSettings);
 
     const response = await fetch(groupLink, {
       method: "GET",
@@ -137,26 +222,28 @@ export async function POST(request) {
     let description =
       extractMetaContent(html, "og:description") || extractMetaContent(html, "description");
     let image = extractMetaContent(html, "og:image");
+    const inferredType = inferGroupType({ title, description, url: groupLink });
+    const selectorTypeKey = normalizeTypeKey(inferredType);
+    const selectors = selectorSettings[selectorTypeKey] || selectorSettings.group;
 
-    // Fallback to provided classes (useful for channels)
-    // Image class: _9vx6, Name class: _as2p
     if (!image) {
-      image = extractImageByClass(html, "_9vx6");
+      image = extractImageByClass(html, selectors.imageClass);
     }
-    
-    if (!title || title === "WhatsApp Group Invite" || title === "WhatsApp") {
-      const classTitle = extractByClass(html, "_as2p");
+
+    if (!title || isPlaceholderInviteName(title)) {
+      const classTitle = extractByClass(html, selectors.nameClass);
       if (classTitle) title = classTitle;
     }
 
+    const classType = extractByClass(html, selectors.typeClass);
     const groupName = normalizeGroupName(title);
-    const groupType = inferGroupType({ title, description, url: groupLink });
+    const groupType = normalizeGroupTypeLabel(classType || inferredType);
 
-    if (!groupName || !image) {
+    if (isPlaceholderInviteName(groupName) || isInvalidImageValue(image)) {
       return NextResponse.json(
         {
           status: "error",
-          message: "Unable to extract WhatsApp group details from the invite link.",
+          message: "Invalid or expired WhatsApp invite detected.",
         },
         { status: 422 }
       );
